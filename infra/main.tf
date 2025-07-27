@@ -1,10 +1,10 @@
-# This file tells Terraform exactly what to build in AWS.
+# This is the final, known-good configuration.
 
 provider "aws" {
   region = var.aws_region
 }
 
-# --- 1. A storage bucket for our pipeline's files ---
+# --- 1. S3 BUCKET WITH EXPLICIT OWNERSHIP ---
 resource "aws_s3_bucket" "codepipeline_artifacts" {
   bucket = "devops-pipeline-bucket-${random_id.bucket_suffix.hex}"
 }
@@ -13,8 +13,6 @@ resource "random_id" "bucket_suffix" {
   byte_length = 8
 }
 
-# --- FINAL FIX PART 1: Enforce Bucket Owner Ownership ---
-# This tells S3 that you, the bucket owner, own all files uploaded to it.
 resource "aws_s3_bucket_ownership_controls" "codepipeline_artifacts_ownership" {
   bucket = aws_s3_bucket.codepipeline_artifacts.id
   rule {
@@ -22,83 +20,13 @@ resource "aws_s3_bucket_ownership_controls" "codepipeline_artifacts_ownership" {
   }
 }
 
+# --- 2. IAM ROLES (SIMPLIFIED) ---
 
-# --- 2. IAM Roles (Permissions for AWS Services) ---
-
-# Permission for the EC2 instance to talk to CodeDeploy
-resource "aws_iam_role" "ec2_role" {
-  name = "CodeDeployEC2Role"
-  assume_role_policy = jsonencode({
-    Version = "2012-10-17",
-    Statement = [{
-      Action    = "sts:AssumeRole",
-      Effect    = "Allow",
-      Principal = { Service = "ec2.amazonaws.com" }
-    }]
-  })
-}
-resource "aws_iam_role_policy_attachment" "ec2_policy_attachment" {
-  role       = aws_iam_role.ec2_role.name
-  policy_arn = "arn:aws:iam::aws:policy/service-role/AmazonEC2RoleforAWSCodeDeploy"
-}
-resource "aws_iam_instance_profile" "ec2_instance_profile" {
-  name = "CodeDeployEC2InstanceProfile"
-  role = aws_iam_role.ec2_role.name
-}
-
-# Permission for CodeDeploy itself
-resource "aws_iam_role" "codedeploy_role" {
-  name = "CodeDeployServiceRole"
-  assume_role_policy = jsonencode({
-    Version = "2012-10-17",
-    Statement = [{
-      Action    = "sts:AssumeRole",
-      Effect    = "Allow",
-      Principal = { Service = "codedeploy.amazonaws.com" }
-    }]
-  })
-}
-# --- FINAL CORRECT POLICY FOR CODEDEPLOY ---
-resource "aws_iam_role_policy" "codedeploy_s3_access" {
-  name = "codedeploy-s3-read-access"
-  role = aws_iam_role.codedeploy_role.id
-
-  policy = jsonencode({
-    Version = "2012-10-17",
-    Statement = [
-      {
-        Action = [
-          "s3:GetObject",
-          "s3:GetObjectVersion",
-          "s3:ListBucket"
-        ],
-        Effect   = "Allow",
-        Resource = [
-          aws_s3_bucket.codepipeline_artifacts.arn,
-          "${aws_s3_bucket.codepipeline_artifacts.arn}/*"
-        ]
-      },
-      {
-        Action = [
-          "kms:Decrypt",
-          "kms:DescribeKey"
-        ],
-        Effect   = "Allow",
-        Resource = "*"
-      }
-    ]
-  })
-}
-resource "aws_iam_role_policy_attachment" "codedeploy_policy_attachment" {
-  role       = aws_iam_role.codedeploy_role.name
-  policy_arn = "arn:aws:iam::aws:policy/service-role/AWSCodeDeployRole"
-}
-
-# Permission for CodePipeline
+# Role for CodePipeline
 resource "aws_iam_role" "codepipeline_role" {
-  name = "CodePipelineRole"
+  name               = "FinalCodePipelineRole"
   assume_role_policy = jsonencode({
-    Version = "2012-10-17",
+    Version   = "2012-10-17",
     Statement = [{
       Action    = "sts:AssumeRole",
       Effect    = "Allow",
@@ -106,37 +34,12 @@ resource "aws_iam_role" "codepipeline_role" {
     }]
   })
 }
-# --- FINAL CORRECT POLICY FOR CODEPIPELINE ---
-resource "aws_iam_role_policy" "codepipeline_policy" {
-  name = "codepipeline-policy"
-  role = aws_iam_role.codepipeline_role.id
 
-  policy = jsonencode({
-    Version = "2012-10-17",
-    Statement = [
-      { Effect = "Allow", Action = ["s3:*"], Resource = [aws_s3_bucket.codepipeline_artifacts.arn, "${aws_s3_bucket.codepipeline_artifacts.arn}/*"] },
-      { Effect = "Allow", Action = ["codebuild:StartBuild", "codebuild:BatchGetBuilds"], Resource = "*" },
-      { Effect = "Allow", Action = ["codedeploy:CreateDeployment", "codedeploy:GetDeployment", "codedeploy:GetDeploymentConfig"], Resource = ["*"] },
-      { Effect = "Allow", Action = ["iam:PassRole"], Resource = [aws_iam_role.codedeploy_role.arn] },
-      {
-        Action = [
-          "kms:Decrypt",
-          "kms:DescribeKey",
-          "kms:Encrypt",
-          "kms:ReEncrypt*",
-          "kms:GenerateDataKey*"
-        ],
-        Effect   = "Allow",
-        Resource = "*"
-      }
-    ]
-  })
-}
-# Permission for CodeBuild
+# Role for CodeBuild
 resource "aws_iam_role" "codebuild_role" {
-  name = "CodeBuildRole"
+  name               = "FinalCodeBuildRole"
   assume_role_policy = jsonencode({
-    Version = "2012-10-17",
+    Version   = "2012-10-17",
     Statement = [{
       Action    = "sts:AssumeRole",
       Effect    = "Allow",
@@ -144,46 +47,128 @@ resource "aws_iam_role" "codebuild_role" {
     }]
   })
 }
+
+# Role for CodeDeploy
+resource "aws_iam_role" "codedeploy_role" {
+  name               = "FinalCodeDeployRole"
+  assume_role_policy = jsonencode({
+    Version   = "2012-10-17",
+    Statement = [{
+      Action    = "sts:AssumeRole",
+      Effect    = "Allow",
+      Principal = { Service = "codedeploy.amazonaws.com" }
+    }]
+  })
+}
+
+# Role for EC2 Instance
+resource "aws_iam_role" "ec2_role" {
+  name               = "FinalEC2Role"
+  assume_role_policy = jsonencode({
+    Version   = "2012-10-17",
+    Statement = [{
+      Action    = "sts:AssumeRole",
+      Effect    = "Allow",
+      Principal = { Service = "ec2.amazonaws.com" }
+    }]
+  })
+}
+
+# --- 3. IAM POLICIES (SIMPLIFIED & CONSOLIDATED) ---
+
+# Policy for CodePipeline
+resource "aws_iam_role_policy" "codepipeline_policy" {
+  name = "FinalCodePipelinePolicy"
+  role = aws_iam_role.codepipeline_role.id
+  policy = jsonencode({
+    Version = "2012-10-17",
+    Statement = [
+      {
+        Effect   = "Allow",
+        Action   = ["s3:*"],
+        Resource = [
+          aws_s3_bucket.codepipeline_artifacts.arn,
+          "${aws_s3_bucket.codepipeline_artifacts.arn}/*"
+        ]
+      },
+      {
+        Effect   = "Allow",
+        Action   = [
+          "codebuild:StartBuild",
+          "codebuild:BatchGetBuilds"
+        ],
+        Resource = "*"
+      },
+      {
+        Effect   = "Allow",
+        Action   = ["codedeploy:*"],
+        Resource = "*"
+      },
+      {
+        Effect   = "Allow",
+        Action   = ["kms:*"],
+        Resource = "*"
+      },
+      {
+        Effect   = "Allow",
+        Action   = ["iam:PassRole"],
+        Resource = [aws_iam_role.codedeploy_role.arn]
+      }
+    ]
+  })
+}
+
+# Policy for CodeBuild
 resource "aws_iam_role_policy" "codebuild_policy" {
-  name = "CodeBuildPolicy"
+  name = "FinalCodeBuildPolicy"
   role = aws_iam_role.codebuild_role.id
   policy = jsonencode({
     Version = "2012-10-17",
     Statement = [
-      { Action = ["logs:*", "s3:*"], Effect = "Allow", Resource = ["*"] },
+      {
+        Effect   = "Allow",
+        Action   = ["logs:*", "s3:*"],
+        Resource = "*"
+      }
     ]
   })
 }
-# --- FINAL FIX: Manage S3 Bucket ACLs ---
-# This explicitly disables the "Block Public Access" settings that interfere with
-# CodePipeline's ability to use Access Control Lists (ACLs) on artifacts.
-resource "aws_s3_bucket_public_access_block" "codepipeline_artifacts_access_block" {
-  bucket = aws_s3_bucket.codepipeline_artifacts.id
 
-  # These two lines are the solution.
-  block_public_acls       = false
-  ignore_public_acls      = false
-
-  # We keep these on for security.
-  block_public_policy     = true
-  restrict_public_buckets = true
+# Attaching AWS Managed Policies for simplicity and correctness
+resource "aws_iam_role_policy_attachment" "codedeploy_service_attachment" {
+  role       = aws_iam_role.codedeploy_role.name
+  policy_arn = "arn:aws:iam::aws:policy/service-role/AWSCodeDeployRole"
 }
 
-# --- 3. The EC2 Virtual Server ---
+resource "aws_iam_role_policy_attachment" "ec2_service_attachment" {
+  role       = aws_iam_role.ec2_role.name
+  policy_arn = "arn:aws:iam::aws:policy/service-role/AmazonEC2RoleforAWSCodeDeploy"
+}
+
+# Instance Profile to attach the role to the EC2 instance
+resource "aws_iam_instance_profile" "ec2_instance_profile" {
+  name = "FinalEC2InstanceProfile"
+  role = aws_iam_role.ec2_role.name
+}
+
+# --- 4. AWS RESOURCES ---
+
+# EC2 Instance
 data "aws_ami" "latest_amazon_linux" {
   most_recent = true
   owners      = ["amazon"]
-  filter {
+  filter  {
     name   = "name"
     values = ["amzn2-ami-hvm-*-x86_64-gp2"]
   }
 }
+
 resource "aws_instance" "app_server" {
-  ami           = data.aws_ami.latest_amazon_linux.id
-  instance_type = "t3.micro" # Free tier eligible
+  ami                  = data.aws_ami.latest_amazon_linux.id
+  instance_type        = "t3.micro"
   iam_instance_profile = aws_iam_instance_profile.ec2_instance_profile.name
-  tags = { Name = "MyWebAppServer" }
-  user_data = <<-EOF
+  tags                 = { Name = "MyFinalAppServer" }
+  user_data            = <<-EOF
               #!/bin/bash
               yum update -y
               yum install -y ruby wget python3
@@ -196,26 +181,27 @@ resource "aws_instance" "app_server" {
               EOF
 }
 
-# --- 4. The CodeDeploy Application ---
+# CodeDeploy Application
 resource "aws_codedeploy_app" "app" {
   compute_platform = "Server"
-  name             = "MyWebApp-Application"
+  name             = "Final-WebApp-Application"
 }
+
 resource "aws_codedeploy_deployment_group" "dg" {
   app_name              = aws_codedeploy_app.app.name
-  deployment_group_name = "MyWebApp-DeploymentGroup"
+  deployment_group_name = "Final-WebApp-DeploymentGroup"
   service_role_arn      = aws_iam_role.codedeploy_role.arn
   ec2_tag_filter {
     key   = "Name"
     type  = "KEY_AND_VALUE"
-    value = "MyWebAppServer"
+    value = "MyFinalAppServer"
   }
 }
 
-# --- 5. The CodeBuild Project ---
+# CodeBuild Project
 resource "aws_codebuild_project" "build" {
-  name          = "MyWebApp-Build"
-  service_role  = aws_iam_role.codebuild_role.arn
+  name         = "Final-WebApp-Build"
+  service_role = aws_iam_role.codebuild_role.arn
   artifacts { type = "CODEPIPELINE" }
   environment {
     compute_type = "BUILD_GENERAL1_SMALL"
@@ -225,9 +211,9 @@ resource "aws_codebuild_project" "build" {
   source { type = "CODEPIPELINE" }
 }
 
-# --- 6. The CodePipeline Itself ---
+# --- 5. THE PIPELINE ---
 resource "aws_codepipeline" "pipeline" {
-  name     = "MyWebApp-Pipeline"
+  name     = "Final-WebApp-Pipeline"
   role_arn = aws_iam_role.codepipeline_role.arn
 
   artifact_store {
@@ -235,7 +221,6 @@ resource "aws_codepipeline" "pipeline" {
     type     = "S3"
   }
 
-  # Stage 1: Get Source Code from GitHub
   stage {
     name = "Source"
     action {
@@ -254,7 +239,6 @@ resource "aws_codepipeline" "pipeline" {
     }
   }
 
-  # Stage 2: Build the Code
   stage {
     name = "Build"
     action {
@@ -269,7 +253,6 @@ resource "aws_codepipeline" "pipeline" {
     }
   }
 
-  # Stage 3: Deploy to EC2 Server
   stage {
     name = "Deploy"
     action {
@@ -285,4 +268,7 @@ resource "aws_codepipeline" "pipeline" {
       }
     }
   }
+
+  # Ensure the S3 ownership is set before the pipeline uses the bucket
+  depends_on = [aws_s3_bucket_ownership_controls.codepipeline_artifacts_ownership]
 }
