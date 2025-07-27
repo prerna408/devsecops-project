@@ -87,13 +87,16 @@ jobs:
 
       - name: Configure kubectl for EKS
         run: aws eks update-kubeconfig --name ${{ env.EKS_CLUSTER_NAME }} --region ${{ env.AWS_REGION }}
-
-      - name: Deploy to Kubernetes
-        run: |
-          kubectl apply -f k8s/sealed-secret.yaml
-          
-          # THIS STEP IS UPDATED: The placeholder text has changed
-          sed -i 's|prerna307/devsecops-app:latest|${{ needs.build-and-push-image.outputs.image_uri }}|' k8s/deployment.yaml
-
-          
-          kubectl apply -f k8s/deployment.yaml
+      
+                - name: Deploy to Kubernetes
+            run: |
+              kubectl apply -f k8s/sealed-secret.yaml
+              
+              # --- THIS IS THE CRITICAL FIX ---
+              # We store the image URI in an environment variable first, which is a more robust way to handle it.
+              export IMAGE_URI="${{ needs.build-and-push-image.outputs.image_uri }}"
+              
+              # We use double quotes to ensure the shell expands the IMAGE_URI variable correctly.
+              sed -i "s|prerna307/devsecops-app:latest|$IMAGE_URI|" k8s/deployment.yaml
+              
+              kubectl apply -f k8s/deployment.yaml
