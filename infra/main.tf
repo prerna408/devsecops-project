@@ -184,15 +184,25 @@ resource "aws_instance" "app_server" {
   instance_type        = "t3.micro"
   iam_instance_profile = aws_iam_instance_profile.ec2_instance_profile.name
   tags                 = { Name = "MyFinalAppServer" }
-  user_data = <<-EOF
+ # ... inside the aws_instance.app_server resource ...
+user_data = <<-EOF
               #!/bin/bash
+              # Update and install dependencies
               yum update -y
-              yum install -y ruby wget python3
-              cd /home/ec2-user
+              yum install -y ruby wget python3-pip
+
+              # Install the CodeDeploy Agent
+              cd /home/ec-user
               wget https://aws-codedeploy-${var.aws_region}.s3.${var.aws_region}.amazonaws.com/latest/install
               chmod +x ./install
               ./install auto
-              yum install -y python3-pip
+
+              # --- THIS IS THE CRITICAL FIX ---
+              # Ensure the CodeDeploy agent service is running and enabled
+              systemctl start codedeploy-agent
+              systemctl enable codedeploy-agent
+
+              # Install application dependencies
               pip3 install flask
               EOF
 }
