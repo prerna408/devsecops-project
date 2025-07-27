@@ -1,0 +1,97 @@
+name: DevSecOps CI/CD to Kubernetes with Docker Hub
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+
+env:
+  AWS_REGION: ${{ secrets.AWS_REGION }}
+  # This now refers to your Docker Hub repository name
+  DOCKER_REPO: devsecops-app
+  EKS_CLUSTER_NAME: ${{ secrets.EKS_CLUSTER_NAME }}
+
+jobs:
+  # Job 1: Scan Terraform code
+  tfsec-scan:
+    name: Terraform Security Scan
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v3
+      - name: Run tfsec
+        uses: aquasecurity/tfsec-action@v1.0.2
+        with:
+          working_directory: infra
+
+  # Job 2: Build, Scan, and Push Docker Image to Docker Hub
+  build-and-push-image:
+    name: Build, Scan & Push Docker Image
+    runs-on: ubuntu-latest
+    needs: tfsec-scan
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    outputs:
+      image_uri: ${{ steps.build-image.outputs.image }}
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v3
+
+      # THIS STEP IS NEW: Login to Docker Hub
+      - name: Login to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      # THIS STEP IS UPDATED: Build and push to Docker Hub
+      - name: Build and push Docker image
+        id: build-image
+        env:
+          IMAGE_TAG: ${{ github.sha }}
+        run: |
+          IMAGE_NAME=${{ secrets.DOCKERHUB_USERNAME }}/${{ env.DOCKER_REPO }}
+          docker build -t $IMAGE_NAME:$IMAGE_TAG .
+          docker push $IMAGE_NAME:$IMAGE_TAG
+          echo "image=$IMAGE_NAME:$IMAGE_TAG" >> $GITHUB_OUTPUT
+
+      - name: Scan Docker image with Trivy
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: ${{ steps.build-image.outputs.image }}
+          format: 'table'
+          exit-code: '1'
+          ignore-unfixed: true
+          vuln-type: 'os,library'
+          severity: 'CRITICAL,HIGH'
+
+  # Job 3: Deploy to EKS (Updated sed command)
+  deploy-to-eks:
+    name: Deploy to EKS
+    runs-on: ubuntu-latest
+    needs: build-and-push-image
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v3
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Configure kubectl for EKS
+        run: aws eks update-kubeconfig --name ${{ env.EKS_CLUSTER_NAME }} --region ${{ env.AWS_REGION }}
+
+      - name: Deploy to Kubernetes
+        run: |
+          kubectl apply -f k8s/sealed-secret.yaml
+          
+          # THIS STEP IS UPDATED: The placeholder text has changed
+          sed -i 's|your-dockerhub-username/your-repo-name:latest|${{ needs.build-and-push-image.outputs.image_uri }}|' k8s/deployment.yaml
+          
+          kubectl apply -f k8s/deployment.yaml
