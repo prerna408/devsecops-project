@@ -17,7 +17,7 @@ spec:
       - name: my-flask-app
         # IMPORTANT: This placeholder now points to Docker Hub.
         # It will be replaced by the GitHub Actions workflow.
-        image: your-dockerhub-username/your-repo-name:latest
+        image: prerna307/devsecops-app:latest
         ports:
         - containerPort: 5000
         env:

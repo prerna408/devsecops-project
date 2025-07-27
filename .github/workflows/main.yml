@@ -93,6 +93,7 @@ jobs:
           kubectl apply -f k8s/sealed-secret.yaml
           
           # THIS STEP IS UPDATED: The placeholder text has changed
-          sed -i 's|your-dockerhub-username/your-repo-name:latest|${{ needs.build-and-push-image.outputs.image_uri }}|' k8s/deployment.yaml
+          sed -i 's|prerna307/devsecops-app:latest|${{ needs.build-and-push-image.outputs.image_uri }}|' k8s/deployment.yaml
+
           
           kubectl apply -f k8s/deployment.yaml
