@@ -8,9 +8,10 @@ provider "aws" {
 # 2. DATA SOURCES
 data "aws_caller_identity" "current" {}
 
+# Data source to find the latest Ubuntu 22.04 LTS AMI
 data "aws_ami" "latest_ubuntu" {
   most_recent = true
-  owners      = ["099720109477"] # Canonical's official AWS account ID
+  owners      = ["099720109477"] # Canonical's official AWS account ID for AMIs
   filter {
     name   = "name"
     values = ["ubuntu/images/hvm-ssd/ubuntu-jammy-22.04-amd64-server-*"]
@@ -19,6 +20,11 @@ data "aws_ami" "latest_ubuntu" {
     name   = "virtualization-type"
     values = ["hvm"]
   }
+}
+
+# Data source to read your local public SSH key
+data "local_file" "public_ssh_key" {
+  filename = pathexpand("~/.ssh/id_rsa.pub")
 }
 
 # 3. S3 BUCKET FOR ARTIFACTS
@@ -162,10 +168,16 @@ resource "aws_iam_instance_profile" "ec2_instance_profile" {
   role = aws_iam_role.ec2_role.name
 }
 
-# 6. AWS RESOURCES
+# 6. EC2 AND SSH KEY RESOURCES
+resource "aws_key_pair" "deployer_key" {
+  key_name   = "deployer-key"
+  public_key = data.local_file.public_ssh_key.content
+}
+
 resource "aws_instance" "app_server" {
   ami                  = data.aws_ami.latest_ubuntu.id
   instance_type        = "t3.micro"
+  key_name             = aws_key_pair.deployer_key.key_name
   iam_instance_profile = aws_iam_instance_profile.ec2_instance_profile.name
   tags                 = { Name = "MyFinalAppServer-Ubuntu" }
   user_data = <<-EOF
@@ -182,6 +194,7 @@ resource "aws_instance" "app_server" {
               EOF
 }
 
+# 7. CODEDEPLOY, CODEBUILD, AND CODEPIPELINE RESOURCES
 resource "aws_codebuild_project" "build" {
   name         = "Final-WebApp-Build-Ubuntu"
   service_role = aws_iam_role.codebuild_role.arn
@@ -214,7 +227,6 @@ resource "aws_codedeploy_deployment_group" "dg" {
   }
 }
 
-# 7. THE PIPELINE
 resource "aws_codepipeline" "pipeline" {
   name     = "Final-WebApp-Pipeline-Ubuntu"
   role_arn = aws_iam_role.codepipeline_role.arn
