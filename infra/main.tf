@@ -134,6 +134,32 @@ resource "aws_iam_role_policy_attachment" "codedeploy_service_attachment" {
   policy_arn = "arn:aws:iam::aws:policy/service-role/AWSCodeDeployRole"
 }
 
+# --- THE FINAL, MISSING PIECE ---
+# This policy gives the CodeDeploy role the explicit permission it needs to
+# read the artifact from S3 and decrypt it with the KMS key.
+resource "aws_iam_role_policy" "codedeploy_s3_kms_access" {
+  name = "FinalCodeDeployS3KMSAccess"
+  role = aws_iam_role.codedeploy_role.id
+  policy = jsonencode({
+    Version = "2012-10-17",
+    Statement = [
+      {
+        Effect   = "Allow",
+        Action   = [
+          "s3:GetObject",
+          "s3:GetObjectVersion"
+        ],
+        Resource = "${aws_s3_bucket.codepipeline_artifacts.arn}/*"
+      },
+      {
+        Effect   = "Allow",
+        Action   = "kms:Decrypt",
+        Resource = aws_kms_key.codepipeline_key.arn
+      }
+    ]
+  })
+}
+
 resource "aws_iam_role" "ec2_role" {
   name               = "FinalEC2Role"
   assume_role_policy = jsonencode({
