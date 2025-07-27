@@ -1,0 +1,18 @@
+# Git files
+.git
+.gitignore
+
+# Terraform files
+infra/
+*.tfvars
+
+# Python cache
+__pycache__/
+*.pyc
+
+# Local binaries and archives
+kubeseal
+*.tar.gz
+
+# VSCode settings
+.vscode/
