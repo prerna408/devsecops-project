@@ -145,6 +145,20 @@ resource "aws_iam_role_policy" "codebuild_policy" {
     ]
   })
 }
+# --- FINAL FIX: Manage S3 Bucket ACLs ---
+# This explicitly disables the "Block Public Access" settings that interfere with
+# CodePipeline's ability to use Access Control Lists (ACLs) on artifacts.
+resource "aws_s3_bucket_public_access_block" "codepipeline_artifacts_access_block" {
+  bucket = aws_s3_bucket.codepipeline_artifacts.id
+
+  # These two lines are the solution.
+  block_public_acls       = false
+  ignore_public_acls      = false
+
+  # We keep these on for security.
+  block_public_policy     = true
+  restrict_public_buckets = true
+}
 
 # --- 3. The EC2 Virtual Server ---
 data "aws_ami" "latest_amazon_linux" {
