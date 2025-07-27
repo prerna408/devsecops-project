@@ -49,6 +49,37 @@ resource "aws_iam_role" "codedeploy_role" {
     }]
   })
 }
+# --- FINAL CORRECT POLICY FOR CODEDEPLOY ---
+resource "aws_iam_role_policy" "codedeploy_s3_access" {
+  name = "codedeploy-s3-read-access"
+  role = aws_iam_role.codedeploy_role.id
+
+  policy = jsonencode({
+    Version = "2012-10-17",
+    Statement = [
+      {
+        Action = [
+          "s3:GetObject",
+          "s3:GetObjectVersion",
+          "s3:ListBucket"
+        ],
+        Effect   = "Allow",
+        Resource = [
+          aws_s3_bucket.codepipeline_artifacts.arn,
+          "${aws_s3_bucket.codepipeline_artifacts.arn}/*"
+        ]
+      },
+      {
+        Action = [
+          "kms:Decrypt",
+          "kms:DescribeKey"
+        ],
+        Effect   = "Allow",
+        Resource = "*"
+      }
+    ]
+  })
+}
 resource "aws_iam_role_policy_attachment" "codedeploy_policy_attachment" {
   role       = aws_iam_role.codedeploy_role.name
   policy_arn = "arn:aws:iam::aws:policy/service-role/AWSCodeDeployRole"
@@ -66,19 +97,32 @@ resource "aws_iam_role" "codepipeline_role" {
     }]
   })
 }
+# --- FINAL CORRECT POLICY FOR CODEPIPELINE ---
 resource "aws_iam_role_policy" "codepipeline_policy" {
-  name = "CodePipelinePolicy"
+  name = "codepipeline-policy"
   role = aws_iam_role.codepipeline_role.id
+
   policy = jsonencode({
     Version = "2012-10-17",
     Statement = [
-      { Action = ["s3:*"], Effect = "Allow", Resource = ["*"] },
-      { Action = ["codebuild:*"], Effect = "Allow", Resource = ["*"] },
-      { Action = ["codedeploy:*"], Effect = "Allow", Resource = ["*"] },
+      { Effect = "Allow", Action = ["s3:*"], Resource = [aws_s3_bucket.codepipeline_artifacts.arn, "${aws_s3_bucket.codepipeline_artifacts.arn}/*"] },
+      { Effect = "Allow", Action = ["codebuild:StartBuild", "codebuild:BatchGetBuilds"], Resource = "*" },
+      { Effect = "Allow", Action = ["codedeploy:CreateDeployment", "codedeploy:GetDeployment", "codedeploy:GetDeploymentConfig"], Resource = ["*"] },
+      { Effect = "Allow", Action = ["iam:PassRole"], Resource = [aws_iam_role.codedeploy_role.arn] },
+      {
+        Action = [
+          "kms:Decrypt",
+          "kms:DescribeKey",
+          "kms:Encrypt",
+          "kms:ReEncrypt*",
+          "kms:GenerateDataKey*"
+        ],
+        Effect   = "Allow",
+        Resource = "*"
+      }
     ]
   })
 }
-
 # Permission for CodeBuild
 resource "aws_iam_role" "codebuild_role" {
   name = "CodeBuildRole"
@@ -121,7 +165,7 @@ resource "aws_instance" "app_server" {
               yum update -y
               yum install -y ruby wget python3
               cd /home/ec2-user
-              wget https://aws-codedeploy-us-east-1.s3.us-east-1.amazonaws.com/latest/install
+              wget https://aws-codedeploy-${var.aws_region}.s3.${var.aws_region}.amazonaws.com/latest/install
               chmod +x ./install
               ./install auto
               yum install -y python3-pip
