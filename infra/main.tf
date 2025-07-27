@@ -163,6 +163,24 @@ resource "aws_iam_role_policy_attachment" "ec2_service_attachment" {
   policy_arn = "arn:aws:iam::aws:policy/service-role/AmazonEC2RoleforAWSCodeDeploy"
 }
 
+# --- THIS IS THE FINAL, MISSING PIECE ---
+# This policy gives the EC2 instance's role the explicit permission it needs
+# to decrypt the artifact downloaded from S3 using our dedicated KMS key.
+resource "aws_iam_role_policy" "ec2_kms_access" {
+  name = "FinalEC2KMSAccess"
+  role = aws_iam_role.ec2_role.id
+  policy = jsonencode({
+    Version = "2012-10-17",
+    Statement = [
+      {
+        Effect   = "Allow",
+        Action   = "kms:Decrypt",
+        Resource = aws_kms_key.codepipeline_key.arn
+      }
+    ]
+  })
+}
+
 resource "aws_iam_instance_profile" "ec2_instance_profile" {
   name = "FinalEC2InstanceProfile"
   role = aws_iam_role.ec2_role.name
@@ -174,12 +192,47 @@ resource "aws_key_pair" "deployer_key" {
   public_key = data.local_file.public_ssh_key.content
 }
 
+# --- ADD THIS NEW SECURITY GROUP RESOURCE ---
+resource "aws_security_group" "instance_sg" {
+  name        = "webapp-instance-sg"
+  description = "Allow SSH and HTTP traffic"
+
+  # This rule allows SSH traffic (port 22) from ANY IP address.
+  # For better security in a real project, you would restrict this to your own IP.
+  ingress {
+    from_port   = 22
+    to_port     = 22
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  # This rule allows HTTP traffic (port 80) so we can see the app later.
+  # Port 5000 is our Flask app, but the service will listen on port 80.
+  ingress {
+    from_port   = 80
+    to_port     = 80
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  # This allows the server to send any traffic out to the internet.
+  egress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+}
+
+# --- THIS IS THE FINAL, CORRECTED EC2 INSTANCE RESOURCE ---
 resource "aws_instance" "app_server" {
-  ami                  = data.aws_ami.latest_ubuntu.id
-  instance_type        = "t3.micro"
-  key_name             = aws_key_pair.deployer_key.key_name
-  iam_instance_profile = aws_iam_instance_profile.ec2_instance_profile.name
-  tags                 = { Name = "MyFinalAppServer-Ubuntu" }
+  ami                    = data.aws_ami.latest_ubuntu.id
+  instance_type          = "t3.micro"
+  key_name               = aws_key_pair.deployer_key.key_name
+  vpc_security_group_ids = [aws_security_group.instance_sg.id]
+  iam_instance_profile   = aws_iam_instance_profile.ec2_instance_profile.name
+  tags                   = { Name = "MyFinalAppServer-Ubuntu" }
+
   user_data = <<-EOF
               #!/bin/bash
               apt-get update -y
