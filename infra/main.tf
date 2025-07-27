@@ -1,4 +1,4 @@
-# --- THIS IS THE COMPLETE, CORRECTLY FORMATTED, AND FINAL main.tf FILE ---
+# --- THIS IS THE COMPLETE, HARDENED, AND FINAL main.tf FILE ---
 
 # 1. PROVIDER CONFIGURATION
 provider "aws" {
@@ -8,10 +8,9 @@ provider "aws" {
 # 2. DATA SOURCES
 data "aws_caller_identity" "current" {}
 
-# Data source to find the latest Ubuntu 22.04 LTS AMI
 data "aws_ami" "latest_ubuntu" {
   most_recent = true
-  owners      = ["099720109477"] # Canonical's official AWS account ID for AMIs
+  owners      = ["099720109477"] # Canonical's official AWS account ID
   filter {
     name   = "name"
     values = ["ubuntu/images/hvm-ssd/ubuntu-jammy-22.04-amd64-server-*"]
@@ -22,18 +21,42 @@ data "aws_ami" "latest_ubuntu" {
   }
 }
 
-# Data source to read your local public SSH key
 data "local_file" "public_ssh_key" {
   filename = pathexpand("~/.ssh/id_rsa.pub")
 }
 
-# 3. S3 BUCKET FOR ARTIFACTS
+# 3. S3 BUCKET (HARDENED)
 resource "random_id" "bucket_suffix" {
   byte_length = 8
 }
 
 resource "aws_s3_bucket" "codepipeline_artifacts" {
   bucket = "devops-pipeline-bucket-${random_id.bucket_suffix.hex}"
+}
+
+resource "aws_s3_bucket_public_access_block" "codepipeline_artifacts_pab" {
+  bucket = aws_s3_bucket.codepipeline_artifacts.id
+
+  block_public_acls       = true
+  block_public_policy     = true
+  ignore_public_acls      = true
+  restrict_public_buckets = true
+}
+
+resource "aws_s3_bucket_server_side_encryption_configuration" "codepipeline_artifacts_sse" {
+  bucket = aws_s3_bucket.codepipeline_artifacts.id
+  rule {
+    apply_server_side_encryption_by_default {
+      sse_algorithm = "AES256"
+    }
+  }
+}
+
+resource "aws_s3_bucket_versioning" "codepipeline_artifacts_versioning" {
+  bucket = aws_s3_bucket.codepipeline_artifacts.id
+  versioning_configuration {
+    status = "Enabled"
+  }
 }
 
 resource "aws_s3_bucket_ownership_controls" "codepipeline_artifacts_ownership" {
@@ -43,10 +66,11 @@ resource "aws_s3_bucket_ownership_controls" "codepipeline_artifacts_ownership" {
   }
 }
 
-# 4. DEDICATED KMS KEY FOR ARTIFACT ENCRYPTION
+# 4. DEDICATED KMS KEY (HARDENED)
 resource "aws_kms_key" "codepipeline_key" {
   description             = "KMS key for CodePipeline artifacts"
   deletion_window_in_days = 7
+  enable_key_rotation     = true
 }
 
 data "aws_iam_policy_document" "codepipeline_key_policy" {
@@ -69,7 +93,8 @@ data "aws_iam_policy_document" "codepipeline_key_policy" {
       identifiers = [
         aws_iam_role.codepipeline_role.arn,
         aws_iam_role.codebuild_role.arn,
-        aws_iam_role.codedeploy_role.arn
+        aws_iam_role.codedeploy_role.arn,
+        aws_iam_role.ec2_role.arn # Add EC2 role to key policy
       ]
     }
     actions   = ["kms:Encrypt", "kms:Decrypt", "kms:ReEncrypt*", "kms:GenerateDataKey*", "kms:DescribeKey"]
@@ -158,27 +183,20 @@ resource "aws_iam_role" "ec2_role" {
   })
 }
 
-resource "aws_iam_role_policy_attachment" "ec2_service_attachment" {
-  role       = aws_iam_role.ec2_role.name
-  policy_arn = "arn:aws:iam::aws:policy/service-role/AmazonEC2RoleforAWSCodeDeploy"
-}
-
-# --- THIS IS THE FINAL, MISSING PIECE ---
-# This policy gives the EC2 instance's role the explicit permission it needs
-# to decrypt the artifact downloaded from S3 using our dedicated KMS key.
 resource "aws_iam_role_policy" "ec2_kms_access" {
   name = "FinalEC2KMSAccess"
   role = aws_iam_role.ec2_role.id
   policy = jsonencode({
     Version = "2012-10-17",
     Statement = [
-      {
-        Effect   = "Allow",
-        Action   = "kms:Decrypt",
-        Resource = aws_kms_key.codepipeline_key.arn
-      }
+      { Effect = "Allow", Action = "kms:Decrypt", Resource = aws_kms_key.codepipeline_key.arn }
     ]
   })
+}
+
+resource "aws_iam_role_policy_attachment" "ec2_service_attachment" {
+  role       = aws_iam_role.ec2_role.name
+  policy_arn = "arn:aws:iam::aws:policy/service-role/AmazonEC2RoleforAWSCodeDeploy"
 }
 
 resource "aws_iam_instance_profile" "ec2_instance_profile" {
@@ -186,37 +204,34 @@ resource "aws_iam_instance_profile" "ec2_instance_profile" {
   role = aws_iam_role.ec2_role.name
 }
 
-# 6. EC2 AND SSH KEY RESOURCES
+# 6. EC2 AND NETWORKING (HARDENED)
 resource "aws_key_pair" "deployer_key" {
   key_name   = "deployer-key"
   public_key = data.local_file.public_ssh_key.content
 }
 
-# --- ADD THIS NEW SECURITY GROUP RESOURCE ---
 resource "aws_security_group" "instance_sg" {
   name        = "webapp-instance-sg"
   description = "Allow SSH and HTTP traffic"
 
-  # This rule allows SSH traffic (port 22) from ANY IP address.
-  # For better security in a real project, you would restrict this to your own IP.
   ingress {
+    description = "Allow SSH from anywhere (for learning purposes)"
     from_port   = 22
     to_port     = 22
     protocol    = "tcp"
     cidr_blocks = ["0.0.0.0/0"]
   }
 
-  # This rule allows HTTP traffic (port 80) so we can see the app later.
-  # Port 5000 is our Flask app, but the service will listen on port 80.
   ingress {
+    description = "Allow HTTP traffic from anywhere"
     from_port   = 80
     to_port     = 80
     protocol    = "tcp"
     cidr_blocks = ["0.0.0.0/0"]
   }
 
-  # This allows the server to send any traffic out to the internet.
   egress {
+    description = "Allow all outbound traffic"
     from_port   = 0
     to_port     = 0
     protocol    = "-1"
@@ -224,7 +239,6 @@ resource "aws_security_group" "instance_sg" {
   }
 }
 
-# --- THIS IS THE FINAL, CORRECTED EC2 INSTANCE RESOURCE ---
 resource "aws_instance" "app_server" {
   ami                    = data.aws_ami.latest_ubuntu.id
   instance_type          = "t3.micro"
@@ -232,6 +246,15 @@ resource "aws_instance" "app_server" {
   vpc_security_group_ids = [aws_security_group.instance_sg.id]
   iam_instance_profile   = aws_iam_instance_profile.ec2_instance_profile.name
   tags                   = { Name = "MyFinalAppServer-Ubuntu" }
+
+  root_block_device {
+    encrypted = true
+  }
+
+  metadata_options {
+    http_tokens   = "required"
+    http_endpoint = "enabled"
+  }
 
   user_data = <<-EOF
               #!/bin/bash
@@ -247,7 +270,7 @@ resource "aws_instance" "app_server" {
               EOF
 }
 
-# 7. CODEDEPLOY, CODEBUILD, AND CODEPIPELINE RESOURCES
+# 7. CODEDEPLOY, CODEBUILD, AND CODEPIPELINE
 resource "aws_codebuild_project" "build" {
   name         = "Final-WebApp-Build-Ubuntu"
   service_role = aws_iam_role.codebuild_role.arn
