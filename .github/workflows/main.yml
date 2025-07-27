@@ -88,7 +88,7 @@ jobs:
       # THIS STEP IS NOW CORRECTLY INDENTED
       - name: Deploy to Kubernetes
         run: |
-          kubectl apply -f kbs/sealed-secret.yaml
+          kubectl apply -f k8s/sealed-secret.yaml
           
           export IMAGE_URI="${{ needs.build-and-push-image.outputs.image_uri }}"
           sed -i "s|prerna307/devsecops-app:latest|$IMAGE_URI|" k8s/deployment.yaml
