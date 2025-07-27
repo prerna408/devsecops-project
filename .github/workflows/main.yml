@@ -28,14 +28,13 @@ jobs:
           working_directory: infra
           soft_fail: true
 
-  # Job 2: Build, Scan, and Push using OFFICIAL DOCKER ACTIONS
+  # Job 2: Build and Push (NO LONGER PRODUCES AN OUTPUT)
   build-and-push-image:
     name: Build, Scan & Push Docker Image
     runs-on: ubuntu-latest
     needs: tfsec-scan
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    outputs:
-      image_with_tag: ${{ steps.build-and-push.outputs.image_with_tag }}
+    # --- The 'outputs' section has been removed ---
     steps:
       - name: Checkout Code
         uses: actions/checkout@v3
@@ -46,30 +45,21 @@ jobs:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-      # --- THIS IS THE CRITICAL FIX ---
-      # This step uses an official action to generate metadata like tags.
       - name: Docker meta
         id: meta
         uses: docker/metadata-action@v5
         with:
           images: ${{ secrets.DOCKERHUB_USERNAME }}/${{ env.DOCKER_REPO }}
-          tags: |
-            type=sha,prefix=,format=short
+          # We will tag the image with the short commit hash
+          tags: type=sha,prefix=,format=short
 
-      # This is the new, official, robust build-and-push action.
-      # It handles outputs correctly.
       - name: Build and push Docker image
-        id: build-and-push
         uses: docker/build-push-action@v5
         with:
           context: .
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-
-      - name: Set Image Output
-        id: set-image-output
-        run: echo "image_with_tag=${{ steps.meta.outputs.tags }}" >> $GITHUB_OUTPUT
 
       - name: Scan Docker image with Trivy
         uses: aquasecurity/trivy-action@master
@@ -81,7 +71,7 @@ jobs:
           vuln-type: 'os,library'
           severity: 'CRITICAL'
 
-  # Job 3: Deploy to EKS
+  # Job 3: Deploy to EKS (RECONSTRUCTS THE IMAGE NAME)
   deploy-to-eks:
     name: Deploy to EKS
     runs-on: ubuntu-latest
@@ -101,14 +91,20 @@ jobs:
       - name: Configure kubectl for EKS
         run: aws eks update-kubeconfig --name ${{ env.EKS_CLUSTER_NAME }} --region ${{ env.AWS_REGION }}
 
+      # --- THIS IS THE FOOLPROOF FIX ---
       - name: Deploy to Kubernetes
         run: |
           kubectl apply -f k8s/sealed-secret.yaml
           
-          # This will now receive the correct output from the build job.
-          export IMAGE_URI="${{ needs.build-and-push-image.outputs.image_with_tag }}"
+          # 1. We will reconstruct the exact same image tag that the build job created.
+          # This removes the dependency on the failing 'outputs' feature.
+          IMAGE_TAG=$(echo ${{ github.sha }} | cut -c1-7)
+          export IMAGE_URI="${{ secrets.DOCKERHUB_USERNAME }}/${{ env.DOCKER_REPO }}:$IMAGE_TAG"
+
+          # 2. As a final check, we will print the variable we just created.
+          echo "--- DEBUG: Reconstructed Image URI is: $IMAGE_URI"
           
-          # The sed command will now work.
+          # 3. This sed command will now use a variable that is guaranteed to exist.
           sed -i "s|prerna307/devsecops-app:latest|$IMAGE_URI|" k8s/deployment.yaml
           
           kubectl apply -f k8s/deployment.yaml
