@@ -6,13 +6,22 @@ provider "aws" {
 
 # --- 1. A storage bucket for our pipeline's files ---
 resource "aws_s3_bucket" "codepipeline_artifacts" {
-  # This combines your base name with the random hex string, ensuring it's unique.
   bucket = "devops-pipeline-bucket-${random_id.bucket_suffix.hex}"
-  # ... other settings
 }
+
 resource "random_id" "bucket_suffix" {
   byte_length = 8
 }
+
+# --- FINAL FIX PART 1: Enforce Bucket Owner Ownership ---
+# This tells S3 that you, the bucket owner, own all files uploaded to it.
+resource "aws_s3_bucket_ownership_controls" "codepipeline_artifacts_ownership" {
+  bucket = aws_s3_bucket.codepipeline_artifacts.id
+  rule {
+    object_ownership = "BucketOwnerEnforced"
+  }
+}
+
 
 # --- 2. IAM Roles (Permissions for AWS Services) ---
 
