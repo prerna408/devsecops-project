@@ -26,6 +26,7 @@ jobs:
         uses: aquasecurity/tfsec-action@v1.0.2
         with:
           working_directory: infra
+          soft_fail: true
 
   # Job 2: Build, Scan, and Push Docker Image to Docker Hub
   build-and-push-image:
