@@ -3,17 +3,21 @@ version: 0.2
 phases:
   install:
     runtime-versions:
-      nodejs: 16
+      python: 3.8
   pre_build:
     commands:
-      - echo "Entering the pre_build phase..."
-      - echo "We will list the files in the directory."
-      - ls -la
+      - echo "Nothing to do in the pre_build phase..."
   build:
     commands:
-      - echo "Entering the build phase..."
       - echo "Build started on `date`"
+      - echo "No build steps required for this project."
   post_build:
     commands:
-      - echo "Entering the post_build phase..."
-      - echo "Build completed."
+      - echo "Build completed on `date`"
+
+# --- THIS IS THE CRITICAL MISSING PIECE ---
+# This section explicitly tells CodeBuild what to put in the output artifact.
+# The '**/*' is a wildcard that means "all files in all subdirectories".
+artifacts:
+  files:
+    - '**/*'
