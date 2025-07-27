@@ -1,12 +1,18 @@
 version: 0.0
 os: linux
 files:
-  - source: /app.py # Copy our python file
-    destination: /home/ec2-user/app
-  - source: /requirements.txt # Copy our requirements file
-    destination: /home/ec2-user/app
+  - source: /
+    destination: /home/ubuntu/app
 hooks:
-  ApplicationStart: # At the "ApplicationStart" event...
-    - location: scripts/start_server.sh # ...run this script
+  AfterInstall:
+    - location: scripts/install_dependencies.sh
       timeout: 300
-      runas: ec2-user
+      runas: root
+  ApplicationStart:
+    - location: scripts/start_server.sh
+      timeout: 300
+      runas: ubuntu
+  ValidateService:
+    - location: scripts/validate_service.sh
+      timeout: 300
+      runas: ubuntu
