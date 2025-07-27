@@ -1,16 +1,29 @@
-# This is the final, known-good configuration.
+# --- THIS IS THE COMPLETE AND FINAL main.tf FILE ---
 
+# 1. PROVIDER CONFIGURATION
 provider "aws" {
   region = var.aws_region
 }
 
-# --- 1. S3 BUCKET WITH EXPLICIT OWNERSHIP ---
-resource "aws_s3_bucket" "codepipeline_artifacts" {
-  bucket = "devops-pipeline-bucket-${random_id.bucket_suffix.hex}"
+# 2. DATA SOURCES
+data "aws_caller_identity" "current" {}
+
+data "aws_ami" "latest_amazon_linux" {
+  most_recent = true
+  owners      = ["amazon"]
+  filter {
+    name   = "name"
+    values = ["amzn2-ami-hvm-*-x86_64-gp2"]
+  }
 }
 
+# 3. S3 BUCKET FOR ARTIFACTS
 resource "random_id" "bucket_suffix" {
   byte_length = 8
+}
+
+resource "aws_s3_bucket" "codepipeline_artifacts" {
+  bucket = "devops-pipeline-bucket-${random_id.bucket_suffix.hex}"
 }
 
 resource "aws_s3_bucket_ownership_controls" "codepipeline_artifacts_ownership" {
@@ -20,124 +33,113 @@ resource "aws_s3_bucket_ownership_controls" "codepipeline_artifacts_ownership" {
   }
 }
 
-# --- 2. IAM ROLES (SIMPLIFIED) ---
+# 4. DEDICATED KMS KEY FOR ARTIFACT ENCRYPTION
+resource "aws_kms_key" "codepipeline_key" {
+  description             = "KMS key for CodePipeline artifacts"
+  deletion_window_in_days = 7
+}
 
-# Role for CodePipeline
+data "aws_iam_policy_document" "codepipeline_key_policy" {
+  statement {
+    sid    = "Enable IAM User Permissions"
+    effect = "Allow"
+    principals {
+      type        = "AWS"
+      identifiers = ["arn:aws:iam::${data.aws_caller_identity.current.account_id}:root"]
+    }
+    actions   = ["kms:*"]
+    resources = ["*"]
+  }
+
+  statement {
+    sid    = "Allow Service Roles to use the key"
+    effect = "Allow"
+    principals {
+      type        = "AWS"
+      identifiers = [
+        aws_iam_role.codepipeline_role.arn,
+        aws_iam_role.codebuild_role.arn,
+        aws_iam_role.codedeploy_role.arn
+      ]
+    }
+    actions = [
+      "kms:Encrypt",
+      "kms:Decrypt",
+      "kms:ReEncrypt*",
+      "kms:GenerateDataKey*",
+      "kms:DescribeKey"
+    ]
+    resources = ["*"]
+  }
+}
+
+resource "aws_kms_key_policy" "codepipeline_key_policy_attachment" {
+  key_id = aws_kms_key.codepipeline_key.id
+  policy = data.aws_iam_policy_document.codepipeline_key_policy.json
+}
+
+# 5. IAM ROLES AND POLICIES
 resource "aws_iam_role" "codepipeline_role" {
   name               = "FinalCodePipelineRole"
   assume_role_policy = jsonencode({
     Version   = "2012-10-17",
-    Statement = [{
-      Action    = "sts:AssumeRole",
-      Effect    = "Allow",
-      Principal = { Service = "codepipeline.amazonaws.com" }
-    }]
+    Statement = [{ Action = "sts:AssumeRole", Effect = "Allow", Principal = { Service = "codepipeline.amazonaws.com" } }]
   })
 }
 
-# Role for CodeBuild
-resource "aws_iam_role" "codebuild_role" {
-  name               = "FinalCodeBuildRole"
-  assume_role_policy = jsonencode({
-    Version   = "2012-10-17",
-    Statement = [{
-      Action    = "sts:AssumeRole",
-      Effect    = "Allow",
-      Principal = { Service = "codebuild.amazonaws.com" }
-    }]
-  })
-}
-
-# Role for CodeDeploy
-resource "aws_iam_role" "codedeploy_role" {
-  name               = "FinalCodeDeployRole"
-  assume_role_policy = jsonencode({
-    Version   = "2012-10-17",
-    Statement = [{
-      Action    = "sts:AssumeRole",
-      Effect    = "Allow",
-      Principal = { Service = "codedeploy.amazonaws.com" }
-    }]
-  })
-}
-
-# Role for EC2 Instance
-resource "aws_iam_role" "ec2_role" {
-  name               = "FinalEC2Role"
-  assume_role_policy = jsonencode({
-    Version   = "2012-10-17",
-    Statement = [{
-      Action    = "sts:AssumeRole",
-      Effect    = "Allow",
-      Principal = { Service = "ec2.amazonaws.com" }
-    }]
-  })
-}
-
-# --- 3. IAM POLICIES (SIMPLIFIED & CONSOLIDATED) ---
-
-# Policy for CodePipeline
 resource "aws_iam_role_policy" "codepipeline_policy" {
   name = "FinalCodePipelinePolicy"
   role = aws_iam_role.codepipeline_role.id
   policy = jsonencode({
     Version = "2012-10-17",
     Statement = [
-      {
-        Effect   = "Allow",
-        Action   = ["s3:*"],
-        Resource = [
-          aws_s3_bucket.codepipeline_artifacts.arn,
-          "${aws_s3_bucket.codepipeline_artifacts.arn}/*"
-        ]
-      },
-      {
-        Effect   = "Allow",
-        Action   = [
-          "codebuild:StartBuild",
-          "codebuild:BatchGetBuilds"
-        ],
-        Resource = "*"
-      },
-      {
-        Effect   = "Allow",
-        Action   = ["codedeploy:*"],
-        Resource = "*"
-      },
-      {
-        Effect   = "Allow",
-        Action   = ["kms:*"],
-        Resource = "*"
-      },
-      {
-        Effect   = "Allow",
-        Action   = ["iam:PassRole"],
-        Resource = [aws_iam_role.codedeploy_role.arn]
-      }
+      { Effect = "Allow", Action = ["s3:*"], Resource = ["${aws_s3_bucket.codepipeline_artifacts.arn}", "${aws_s3_bucket.codepipeline_artifacts.arn}/*"] },
+      { Effect = "Allow", Action = ["codebuild:StartBuild", "codebuild:BatchGetBuilds"], Resource = "*" },
+      { Effect = "Allow", Action = ["codedeploy:*"], Resource = "*" },
+      { Effect = "Allow", Action = ["iam:PassRole"], Resource = [aws_iam_role.codedeploy_role.arn] }
     ]
   })
 }
 
-# Policy for CodeBuild
+resource "aws_iam_role" "codebuild_role" {
+  name               = "FinalCodeBuildRole"
+  assume_role_policy = jsonencode({
+    Version   = "2012-10-17",
+    Statement = [{ Action = "sts:AssumeRole", Effect = "Allow", Principal = { Service = "codebuild.amazonaws.com" } }]
+  })
+}
+
 resource "aws_iam_role_policy" "codebuild_policy" {
   name = "FinalCodeBuildPolicy"
   role = aws_iam_role.codebuild_role.id
   policy = jsonencode({
     Version = "2012-10-17",
     Statement = [
-      {
-        Effect   = "Allow",
-        Action   = ["logs:*", "s3:*"],
-        Resource = "*"
-      }
+      { Effect = "Allow", Action = ["logs:*"], Resource = "*" },
+      { Effect = "Allow", Action = ["s3:*"], Resource = ["${aws_s3_bucket.codepipeline_artifacts.arn}", "${aws_s3_bucket.codepipeline_artifacts.arn}/*"] }
     ]
   })
 }
 
-# Attaching AWS Managed Policies for simplicity and correctness
+resource "aws_iam_role" "codedeploy_role" {
+  name               = "FinalCodeDeployRole"
+  assume_role_policy = jsonencode({
+    Version   = "2012-10-17",
+    Statement = [{ Action = "sts:AssumeRole", Effect = "Allow", Principal = { Service = "codedeploy.amazonaws.com" } }]
+  })
+}
+
 resource "aws_iam_role_policy_attachment" "codedeploy_service_attachment" {
   role       = aws_iam_role.codedeploy_role.name
   policy_arn = "arn:aws:iam::aws:policy/service-role/AWSCodeDeployRole"
+}
+
+resource "aws_iam_role" "ec2_role" {
+  name               = "FinalEC2Role"
+  assume_role_policy = jsonencode({
+    Version   = "2012-10-17",
+    Statement = [{ Action = "sts:AssumeRole", Effect = "Allow", Principal = { Service = "ec2.amazonaws.com" } }]
+  })
 }
 
 resource "aws_iam_role_policy_attachment" "ec2_service_attachment" {
@@ -145,30 +147,18 @@ resource "aws_iam_role_policy_attachment" "ec2_service_attachment" {
   policy_arn = "arn:aws:iam::aws:policy/service-role/AmazonEC2RoleforAWSCodeDeploy"
 }
 
-# Instance Profile to attach the role to the EC2 instance
 resource "aws_iam_instance_profile" "ec2_instance_profile" {
   name = "FinalEC2InstanceProfile"
   role = aws_iam_role.ec2_role.name
 }
 
-# --- 4. AWS RESOURCES ---
-
-# EC2 Instance
-data "aws_ami" "latest_amazon_linux" {
-  most_recent = true
-  owners      = ["amazon"]
-  filter  {
-    name   = "name"
-    values = ["amzn2-ami-hvm-*-x86_64-gp2"]
-  }
-}
-
+# 6. AWS RESOURCES
 resource "aws_instance" "app_server" {
   ami                  = data.aws_ami.latest_amazon_linux.id
   instance_type        = "t3.micro"
   iam_instance_profile = aws_iam_instance_profile.ec2_instance_profile.name
   tags                 = { Name = "MyFinalAppServer" }
-  user_data            = <<-EOF
+  user_data = <<-EOF
               #!/bin/bash
               yum update -y
               yum install -y ruby wget python3
@@ -181,7 +171,18 @@ resource "aws_instance" "app_server" {
               EOF
 }
 
-# CodeDeploy Application
+resource "aws_codebuild_project" "build" {
+  name         = "Final-WebApp-Build"
+  service_role = aws_iam_role.codebuild_role.arn
+  artifacts { type = "CODEPIPELINE" }
+  environment {
+    compute_type = "BUILD_GENERAL1_SMALL"
+    image        = "aws/codebuild/standard:5.0"
+    type         = "LINUX_CONTAINER"
+  }
+  source { type = "CODEPIPELINE" }
+}
+
 resource "aws_codedeploy_app" "app" {
   compute_platform = "Server"
   name             = "Final-WebApp-Application"
@@ -198,20 +199,7 @@ resource "aws_codedeploy_deployment_group" "dg" {
   }
 }
 
-# CodeBuild Project
-resource "aws_codebuild_project" "build" {
-  name         = "Final-WebApp-Build"
-  service_role = aws_iam_role.codebuild_role.arn
-  artifacts { type = "CODEPIPELINE" }
-  environment {
-    compute_type = "BUILD_GENERAL1_SMALL"
-    image        = "aws/codebuild/standard:5.0"
-    type         = "LINUX_CONTAINER"
-  }
-  source { type = "CODEPIPELINE" }
-}
-
-# --- 5. THE PIPELINE ---
+# 7. THE PIPELINE
 resource "aws_codepipeline" "pipeline" {
   name     = "Final-WebApp-Pipeline"
   role_arn = aws_iam_role.codepipeline_role.arn
@@ -219,6 +207,10 @@ resource "aws_codepipeline" "pipeline" {
   artifact_store {
     location = aws_s3_bucket.codepipeline_artifacts.bucket
     type     = "S3"
+    encryption_key {
+      id   = aws_kms_key.codepipeline_key.arn
+      type = "KMS"
+    }
   }
 
   stage {
@@ -269,6 +261,8 @@ resource "aws_codepipeline" "pipeline" {
     }
   }
 
-  # Ensure the S3 ownership is set before the pipeline uses the bucket
-  depends_on = [aws_s3_bucket_ownership_controls.codepipeline_artifacts_ownership]
+  depends_on = [
+    aws_s3_bucket_ownership_controls.codepipeline_artifacts_ownership,
+    aws_kms_key_policy.codepipeline_key_policy_attachment
+  ]
 }
