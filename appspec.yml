@@ -1,0 +1,12 @@
+version: 0.0
+os: linux
+files:
+  - source: /app.py # Copy our python file
+    destination: /home/ec2-user/app
+  - source: /requirements.txt # Copy our requirements file
+    destination: /home/ec2-user/app
+hooks:
+  ApplicationStart: # At the "ApplicationStart" event...
+    - location: scripts/start_server.sh # ...run this script
+      timeout: 300
+      runas: ec2-user

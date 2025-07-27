@@ -1,0 +1,10 @@
+
+# Ignore Terraform runtime files
+.terraform/
+*.tfstate
+*.tfstate.*
+crash.log
+*.tfvars
+*.tfvars.json
+# Other common files to ignore
+.DS_Store
